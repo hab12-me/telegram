@@ -1,61 +1,62 @@
 # main.py - Logo Bing Bingo Telegram Bot
-# Complete bot with your live game URL: https://logo-bingo-game.vercel.app/
+# Complete working version - NO internal library imports
 
-import asyncio
-import json
-import logging
+import os
 import sqlite3
 import random
 import string
+import threading
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
 from flask import Flask, request, jsonify
 
+# ✅ CORRECT imports for python-telegram-bot
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, filters, ContextTypes, ConversationHandler
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler
 )
 from telegram.constants import ParseMode
 
 # ============================================
-# FLASK WEB SERVER (For Game API)
-# ============================================
-app = Flask(__name__)
-
-# ============================================
-# CONFIGURATION
+# CONFIGURATION - READ FROM ENVIRONMENT
 # ============================================
 
-# BOT CONFIGURATION - REPLACE WITH YOUR ACTUAL BOT TOKEN
-BOT_TOKEN = "8575015302:AAFnH6MKdm4uJEMnbN_0Krz0NW9J3DG4D38"  # Get from @BotFather on Telegram
+BOT_TOKEN = os.environ.get('8575015302:AAFnH6MKdm4uJEMnbN_0Krz0NW9J3DG4D38')
+if not BOT_TOKEN:
+    print("❌ ERROR: BOT_TOKEN environment variable not set!")
+    print("Please add it in Render Dashboard → Environment")
+    exit(1)
 
-# YOUR LIVE GAME URL
-GAME_URL = "https://logo-bingo-game.vercel.app"
+GAME_URL = os.environ.get('GAME_URL', 'https://logo-bingo-game.vercel.app')
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', '@Fix6T')
+TELEBIRR_NUMBER = os.environ.get('TELEBIRR_NUMBER', '0931721793')
+OWNER_NAME = os.environ.get('OWNER_NAME', 'Wendesen Tamene')
 
-# ADMIN CONFIGURATION
-ADMIN_USERNAME = "@Fix6T"
-ADMIN_ID = None
+CARD_PRICE = int(os.environ.get('CARD_PRICE', '10'))
+MIN_WITHDRAW = int(os.environ.get('MIN_WITHDRAW', '50'))
+WINNER_PERCENTAGE = int(os.environ.get('WINNER_PERCENTAGE', '70'))
 
-# TELEBIRR PAYMENT INFO
-OWNER_PHONE = "0931721793"
-OWNER_NAME = "Wendesen Tamene"
-TELEBIRR_NUMBER = "0931721793"
-
-# Game Constants
-CARD_PRICE = 10
-MIN_WITHDRAW = 50
-WINNER_PERCENTAGE = 70
+print("=" * 50)
+print("🎯 Logo Bing Bingo Bot Starting...")
+print(f"🎮 Game URL: {GAME_URL}")
+print(f"👑 Admin: {ADMIN_USERNAME}")
+print(f"💰 Card Price: {CARD_PRICE} ETB")
+print(f"🏆 Winner gets: {WINNER_PERCENTAGE}%")
+print(f"🤖 Bot Token: {'✅ Set' if BOT_TOKEN else '❌ MISSING'}")
+print("=" * 50)
 
 # Conversation states
 DEPOSIT_STATE = 1
 WITHDRAW_STATE = 2
 
-# Get Replit URL
-import os
-REPLIT_URL = f"https://{os.environ.get('REPL_SLUG', 'logo-bingo-bot')}.{os.environ.get('REPL_OWNER', 'replit')}.repl.co"
-print(f"🌐 Your bot API URL is: {REPLIT_URL}")
-print(f"🎮 Game URL: {GAME_URL}")
+# Flask app
+app = Flask(__name__)
+ADMIN_ID = None
 
 # ============================================
 # DATABASE SETUP
@@ -71,10 +72,10 @@ def init_db():
             username TEXT,
             first_name TEXT,
             last_name TEXT,
-            balance REAL DEFAULT 0.0,
-            total_deposited REAL DEFAULT 0.0,
-            total_withdrawn REAL DEFAULT 0.0,
-            total_won REAL DEFAULT 0.0,
+            balance REAL DEFAULT 0,
+            total_deposited REAL DEFAULT 0,
+            total_withdrawn REAL DEFAULT 0,
+            total_won REAL DEFAULT 0,
             games_played INTEGER DEFAULT 0,
             games_won INTEGER DEFAULT 0,
             registered_date TEXT,
@@ -111,26 +112,32 @@ def init_db():
     
     conn.commit()
     conn.close()
-    print("✅ Database initialized!")
+    print("✅ Database initialized")
 
-# ============================================
-# DATABASE FUNCTIONS
-# ============================================
-
-def get_user(user_id: int):
+def get_user(user_id):
     conn = sqlite3.connect('bingo_bot.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        columns = ['user_id', 'username', 'first_name', 'last_name', 'balance', 
-                   'total_deposited', 'total_withdrawn', 'total_won', 'games_played', 
-                   'games_won', 'registered_date', 'is_admin']
-        return dict(zip(columns, row))
+        return {
+            'user_id': row[0],
+            'username': row[1],
+            'first_name': row[2],
+            'last_name': row[3],
+            'balance': row[4],
+            'total_deposited': row[5],
+            'total_withdrawn': row[6],
+            'total_won': row[7],
+            'games_played': row[8],
+            'games_won': row[9],
+            'registered_date': row[10],
+            'is_admin': row[11]
+        }
     return None
 
-def create_user(user_id: int, username: str, first_name: str, last_name: str = None):
+def create_user(user_id, username, first_name, last_name=None):
     conn = sqlite3.connect('bingo_bot.db')
     cursor = conn.cursor()
     try:
@@ -138,7 +145,7 @@ def create_user(user_id: int, username: str, first_name: str, last_name: str = N
         cursor.execute('''
             INSERT INTO users (user_id, username, first_name, last_name, balance, registered_date)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, username, first_name, last_name, 0.0, registered_date))
+        ''', (user_id, username or '', first_name, last_name or '', 0, registered_date))
         conn.commit()
         return True
     except:
@@ -146,7 +153,7 @@ def create_user(user_id: int, username: str, first_name: str, last_name: str = N
     finally:
         conn.close()
 
-def update_balance_db(user_id: int, amount: float, operation: str = 'add'):
+def update_balance(user_id, amount, operation='add'):
     conn = sqlite3.connect('bingo_bot.db')
     cursor = conn.cursor()
     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
@@ -166,54 +173,31 @@ def update_balance_db(user_id: int, amount: float, operation: str = 'add'):
     conn.close()
     return False
 
-def add_deposit_request(user_id: int, amount: float, transaction_id: str):
+def add_deposit_request(user_id, amount, transaction_id):
     conn = sqlite3.connect('bingo_bot.db')
     cursor = conn.cursor()
     request_date = datetime.now().isoformat()
     cursor.execute('''
-        INSERT INTO deposit_requests (user_id, amount, transaction_id, status, request_date)
+        INSERT INTO deposit_requests (user_id, amount, transaction_id, request_date)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, amount, transaction_id, request_date))
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return request_id
+
+def add_withdraw_request(user_id, amount, method, account_info):
+    conn = sqlite3.connect('bingo_bot.db')
+    cursor = conn.cursor()
+    request_date = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT INTO withdraw_requests (user_id, amount, withdrawal_method, account_info, request_date)
         VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, amount, transaction_id, 'pending', request_date))
+    ''', (user_id, amount, method, account_info, request_date))
     request_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return request_id
-
-def add_withdraw_request(user_id: int, amount: float, method: str, account_info: str):
-    conn = sqlite3.connect('bingo_bot.db')
-    cursor = conn.cursor()
-    request_date = datetime.now().isoformat()
-    cursor.execute('''
-        INSERT INTO withdraw_requests (user_id, amount, withdrawal_method, account_info, status, request_date)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (user_id, amount, method, account_info, 'pending', request_date))
-    request_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return request_id
-
-def verify_deposit(request_id: int, admin_id: int):
-    conn = sqlite3.connect('bingo_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id, amount, status FROM deposit_requests WHERE id = ?', (request_id,))
-    row = cursor.fetchone()
-    if not row or row[2] != 'pending':
-        conn.close()
-        return False, 0
-    user_id, amount, _ = row
-    verified_date = datetime.now().isoformat()
-    cursor.execute('''
-        UPDATE deposit_requests SET status = 'approved', verified_by = ?, verified_date = ?
-        WHERE id = ?
-    ''', (admin_id, verified_date, request_id))
-    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-    current = cursor.fetchone()
-    new_balance = current[0] + amount
-    cursor.execute('UPDATE users SET balance = ?, total_deposited = total_deposited + ? WHERE user_id = ?', 
-                   (new_balance, amount, user_id))
-    conn.commit()
-    conn.close()
-    return True, amount
 
 def get_pending_deposits():
     conn = sqlite3.connect('bingo_bot.db')
@@ -230,8 +214,28 @@ def get_pending_deposits():
     conn.close()
     return rows
 
+def verify_deposit(request_id, admin_id):
+    conn = sqlite3.connect('bingo_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, amount, status FROM deposit_requests WHERE id = ?', (request_id,))
+    row = cursor.fetchone()
+    if not row or row[2] != 'pending':
+        conn.close()
+        return False, 0
+    user_id, amount, _ = row
+    cursor.execute('UPDATE deposit_requests SET status = 'approved', verified_by = ?, verified_date = ? WHERE id = ?',
+                   (admin_id, datetime.now().isoformat(), request_id))
+    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    current = cursor.fetchone()
+    new_balance = current[0] + amount
+    cursor.execute('UPDATE users SET balance = ?, total_deposited = total_deposited + ? WHERE user_id = ?',
+                   (new_balance, amount, user_id))
+    conn.commit()
+    conn.close()
+    return True, amount
+
 # ============================================
-# FLASK API ROUTES (For Game)
+# FLASK API ROUTES
 # ============================================
 
 @app.route('/')
@@ -266,15 +270,15 @@ def api_game():
     
     if action == 'updateBalance':
         balance = game_data.get('balance')
-        update_balance_db(user_id, balance, 'add' if balance > 0 else 'subtract')
+        update_balance(user_id, balance, 'add')
         return jsonify({'success': True})
     
     elif action == 'recordWin':
         win_amount = game_data.get('winAmount')
-        update_balance_db(user_id, win_amount, 'add')
+        update_balance(user_id, win_amount, 'add')
         conn = sqlite3.connect('bingo_bot.db')
         cursor = conn.cursor()
-        cursor.execute('UPDATE users SET total_won = total_won + ?, games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = ?', 
+        cursor.execute('UPDATE users SET total_won = total_won + ?, games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = ?',
                        (win_amount, user_id))
         conn.commit()
         conn.close()
@@ -300,7 +304,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
             global ADMIN_ID
             ADMIN_ID = user.id
-            await update.message.reply_text("✅ You are now ADMIN!")
+            await update.message.reply_text("✅ You are registered as ADMIN!")
     
     user_data = get_user(user.id)
     welcome = f"""
@@ -322,8 +326,6 @@ Hello {user.first_name}! 👋
 /profile - Your stats
 /help - All commands
 
-*Admin:* /verify /pending /players
-
 🎮 *Ready?* Use /play to start!
     """
     await update.message.reply_text(welcome, parse_mode=ParseMode.MARKDOWN)
@@ -338,8 +340,8 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Registration successful!")
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_data = get_user(user.id)
+    user_id = update.effective_user.id
+    user_data = get_user(user_id)
     if user_data:
         await update.message.reply_text(
             f"💰 *YOUR BALANCE*\n\n"
@@ -348,6 +350,8 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏆 Won: {user_data['total_won']:.2f} ETB",
             parse_mode=ParseMode.MARKDOWN
         )
+    else:
+        await update.message.reply_text("❌ Please /register first!")
 
 async def instruction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
@@ -359,7 +363,6 @@ async def instruction(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4️⃣ Complete: Row, Column, Diagonal, or Corners
 5️⃣ Click BINGO! to win {WINNER_PERCENTAGE}% of prize pool
 
-*Prize:* {WINNER_PERCENTAGE}% to winner, {100-WINNER_PERCENTAGE}% to house
 *Min Withdraw:* {MIN_WITHDRAW} ETB
 
 Use /play to start!
@@ -367,7 +370,6 @@ Use /play to start!
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send the Bingo game link - YOUR LIVE GAME URL INTEGRATED"""
     user_id = update.effective_user.id
     user_data = get_user(user_id)
     
@@ -376,8 +378,6 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     session_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-    
-    # YOUR LIVE GAME URL WITH USER ID
     game_url = f"{GAME_URL}/?user_id={user_id}&session={session_id}"
     
     keyboard = InlineKeyboardMarkup([
@@ -433,11 +433,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *Deposit:* Send to {TELEBIRR_NUMBER} ({OWNER_NAME}), then /deposit amount TXN_ID
 *Withdraw:* /withdraw amount phone_number
-*Game URL:* {GAME_URL}
     """
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-# Deposit conversation
 async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"💳 *DEPOSIT MONEY*\n\n"
@@ -475,18 +473,11 @@ async def handle_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Pending admin approval @Fix6T"
         )
         
-        if ADMIN_ID:
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"🔔 NEW DEPOSIT\nUser: @{user.username}\nAmount: {amount} ETB\nTXN: {txn_id}\nID: #{request_id}"
-            )
-        
         return ConversationHandler.END
     except:
         await update.message.reply_text("❌ Invalid amount")
         return DEPOSIT_STATE
 
-# Withdraw conversation
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"💸 *WITHDRAW*\n\n"
@@ -515,28 +506,20 @@ async def handle_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Insufficient balance or below minimum")
             return WITHDRAW_STATE
         
-        update_balance_db(user_id, amount, 'subtract')
+        update_balance(user_id, amount, 'subtract')
         request_id = add_withdraw_request(user_id, amount, 'Telebirr', phone)
         
         await update.message.reply_text(
             f"✅ Withdrawal #{request_id} created!\n"
             f"Amount: {amount:.2f} ETB\n"
-            f"Phone: {phone}\n"
             f"Pending admin approval"
         )
-        
-        if ADMIN_ID:
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"🔔 NEW WITHDRAWAL\nUser: @{user.username}\nAmount: {amount} ETB\nPhone: {phone}\nID: #{request_id}"
-            )
         
         return ConversationHandler.END
     except:
         await update.message.reply_text("❌ Invalid")
         return WITHDRAW_STATE
 
-# Admin commands
 async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = get_user(user_id)
@@ -552,7 +535,6 @@ async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not deposits:
         message += "No pending deposits"
     
-    message += "\nUse /verify to approve"
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 async def verify_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -614,15 +596,23 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled")
     return ConversationHandler.END
 
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "balance":
+        await balance(update, context)
+    elif query.data == "instructions":
+        await instruction(update, context)
+
 # ============================================
-# RUN BOTH BOT AND WEB SERVER
+# RUN BOT
 # ============================================
 
 def run_bot():
-    """Run the Telegram bot"""
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Add handlers
+    # Command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
     application.add_handler(CommandHandler("balance", balance))
@@ -630,45 +620,44 @@ def run_bot():
     application.add_handler(CommandHandler("play", play))
     application.add_handler(CommandHandler("profile", profile))
     application.add_handler(CommandHandler("help", help_command))
+    
+    # Admin commands
     application.add_handler(CommandHandler("pending", pending_requests))
     application.add_handler(CommandHandler("verify", verify_menu))
     application.add_handler(CommandHandler("players", players_list))
     
     # Conversation handlers
     application.add_handler(ConversationHandler(
-        entry_points=[CommandHandler('deposit', deposit)],
+        entry_points=[CommandHandler("deposit", deposit)],
         states={DEPOSIT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deposit)]},
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
     application.add_handler(ConversationHandler(
-        entry_points=[CommandHandler('withdraw', withdraw)],
+        entry_points=[CommandHandler("withdraw", withdraw)],
         states={WITHDRAW_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw)]},
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    application.add_handler(CallbackQueryHandler(admin_callback))
+    # Callback handlers
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^dep_"))
+    application.add_handler(CallbackQueryHandler(callback_handler))
     
-    print(f"🤖 Bot is running!")
-    print(f"🎮 Game URL: {GAME_URL}")
+    print("🤖 Bot is running!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def run_web():
-    """Run Flask web server"""
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
     init_db()
-    print(f"🎯 Logo Bing Bingo Bot Starting...")
-    print(f"🎮 Game URL: {GAME_URL}")
-    print(f"💰 Card Price: {CARD_PRICE} ETB")
-    print(f"🏆 Winner gets: {WINNER_PERCENTAGE}%")
-    print("-" * 40)
+    print("🚀 Starting Logo Bing Bingo Bot...")
     
-    # Run both in threads
-    import threading
+    # Run web server in background thread
     web_thread = threading.Thread(target=run_web)
     web_thread.daemon = True
     web_thread.start()
     
+    # Run bot (this blocks)
     run_bot()

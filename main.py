@@ -1,5 +1,5 @@
 # main.py - Logo Bing Bingo Telegram Bot
-# Complete working version - NO internal library imports
+# Complete working version - FIXED syntax errors
 
 import os
 import sqlite3
@@ -9,7 +9,7 @@ import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
 
-# ✅ CORRECT imports for python-telegram-bot
+# Correct imports for python-telegram-bot
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,14 +23,17 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 # ============================================
-# CONFIGURATION - READ FROM ENVIRONMENT
+# CONFIGURATION - WITH YOUR BOT TOKEN
 # ============================================
 
-BOT_TOKEN = os.environ.get('8575015302:AAFnH6MKdm4uJEMnbN_0Krz0NW9J3DG4D38')
-if not BOT_TOKEN:
-    print("❌ ERROR: BOT_TOKEN environment variable not set!")
-    print("Please add it in Render Dashboard → Environment")
-    exit(1)
+# YOUR BOT TOKEN - Added directly (you can also use environment variable)
+BOT_TOKEN = "8575015302:AAFnH6MKdm4uJEMnbN_0Krz0NW9J3DG4D38"
+
+# Alternative: Read from environment variable (uncomment if you prefer)
+# BOT_TOKEN = os.environ.get('BOT_TOKEN')
+# if not BOT_TOKEN:
+#     print("❌ ERROR: BOT_TOKEN environment variable not set!")
+#     exit(1)
 
 GAME_URL = os.environ.get('GAME_URL', 'https://logo-bingo-game.vercel.app')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', '@Fix6T')
@@ -215,21 +218,31 @@ def get_pending_deposits():
     return rows
 
 def verify_deposit(request_id, admin_id):
+    """Verify and approve a deposit request - FIXED syntax error"""
     conn = sqlite3.connect('bingo_bot.db')
     cursor = conn.cursor()
+    
+    # Get the deposit request
     cursor.execute('SELECT user_id, amount, status FROM deposit_requests WHERE id = ?', (request_id,))
     row = cursor.fetchone()
+    
     if not row or row[2] != 'pending':
         conn.close()
         return False, 0
+    
     user_id, amount, _ = row
-    cursor.execute('UPDATE deposit_requests SET status = 'approved', verified_by = ?, verified_date = ? WHERE id = ?',
+    
+    # Update deposit request status - FIXED: using double quotes
+    cursor.execute('UPDATE deposit_requests SET status = "approved", verified_by = ?, verified_date = ? WHERE id = ?',
                    (admin_id, datetime.now().isoformat(), request_id))
+    
+    # Add balance to user
     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
     current = cursor.fetchone()
     new_balance = current[0] + amount
     cursor.execute('UPDATE users SET balance = ?, total_deposited = total_deposited + ? WHERE user_id = ?',
                    (new_balance, amount, user_id))
+    
     conn.commit()
     conn.close()
     return True, amount
@@ -465,25 +478,60 @@ async def handle_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Minimum 10 ETB")
             return DEPOSIT_STATE
         
+        if amount > 10000:
+            await update.message.reply_text("❌ Maximum 10000 ETB")
+            return DEPOSIT_STATE
+        
         request_id = add_deposit_request(user_id, amount, txn_id)
         
         await update.message.reply_text(
-            f"✅ Deposit request #{request_id} created!\n"
-            f"Amount: {amount:.2f} ETB\n"
-            f"Pending admin approval @Fix6T"
+            f"✅ *Deposit Request Created!*\n\n"
+            f"💰 Amount: {amount:.2f} ETB\n"
+            f"🆔 Transaction ID: {txn_id}\n"
+            f"📋 Request ID: #{request_id}\n\n"
+            f"⏳ Pending approval by admin {ADMIN_USERNAME}",
+            parse_mode=ParseMode.MARKDOWN
         )
         
+        # Notify admin if ADMIN_ID is set
+        if ADMIN_ID:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"🔔 *NEW DEPOSIT REQUEST*\n\n"
+                f"👤 User: @{user.username or user.first_name}\n"
+                f"💰 Amount: {amount:.2f} ETB\n"
+                f"🆔 TXN: {txn_id}\n"
+                f"📋 ID: #{request_id}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
         return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ Invalid amount")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount! Use numbers only.")
         return DEPOSIT_STATE
 
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_user(user_id)
+    
+    if not user_data:
+        await update.message.reply_text("❌ Please /register first!")
+        return ConversationHandler.END
+    
+    if user_data['balance'] < MIN_WITHDRAW:
+        await update.message.reply_text(
+            f"❌ Minimum withdrawal is {MIN_WITHDRAW} ETB\n"
+            f"💰 Your balance: {user_data['balance']:.2f} ETB"
+        )
+        return ConversationHandler.END
+    
     await update.message.reply_text(
-        f"💸 *WITHDRAW*\n\n"
+        f"💸 *WITHDRAWAL REQUEST*\n\n"
+        f"💰 Available balance: {user_data['balance']:.2f} ETB\n"
+        f"📉 Minimum withdrawal: {MIN_WITHDRAW} ETB\n\n"
         f"Send: `/withdraw amount phone_number`\n"
         f"Example: `/withdraw 200 0912345678`\n\n"
-        f"Minimum: {MIN_WITHDRAW} ETB",
+        f"Funds will be sent to your Telebirr after admin verification.",
         parse_mode=ParseMode.MARKDOWN
     )
     return WITHDRAW_STATE
@@ -495,90 +543,134 @@ async def handle_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = update.message.text.split()
         if len(parts) < 3:
-            await update.message.reply_text("❌ Format: /withdraw amount phone")
+            await update.message.reply_text("❌ Format: /withdraw amount phone_number")
             return WITHDRAW_STATE
         
         amount = float(parts[1])
         phone = parts[2]
         
-        user_data = get_user(user_id)
-        if not user_data or user_data['balance'] < amount or amount < MIN_WITHDRAW:
-            await update.message.reply_text("❌ Insufficient balance or below minimum")
+        if amount < MIN_WITHDRAW:
+            await update.message.reply_text(f"❌ Minimum withdrawal is {MIN_WITHDRAW} ETB")
             return WITHDRAW_STATE
         
+        user_data = get_user(user_id)
+        if not user_data:
+            await update.message.reply_text("❌ Please /register first!")
+            return WITHDRAW_STATE
+        
+        if user_data['balance'] < amount:
+            await update.message.reply_text(f"❌ Insufficient balance! Your balance: {user_data['balance']:.2f} ETB")
+            return WITHDRAW_STATE
+        
+        # Subtract balance immediately
         update_balance(user_id, amount, 'subtract')
+        
+        # Create withdrawal request
         request_id = add_withdraw_request(user_id, amount, 'Telebirr', phone)
         
         await update.message.reply_text(
-            f"✅ Withdrawal #{request_id} created!\n"
-            f"Amount: {amount:.2f} ETB\n"
-            f"Pending admin approval"
+            f"✅ *Withdrawal Request Created!*\n\n"
+            f"💰 Amount: {amount:.2f} ETB\n"
+            f"📱 Phone: {phone}\n"
+            f"📋 Request ID: #{request_id}\n\n"
+            f"⏳ Pending processing by admin {ADMIN_USERNAME}",
+            parse_mode=ParseMode.MARKDOWN
         )
         
+        # Notify admin
+        if ADMIN_ID:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"🔔 *NEW WITHDRAWAL REQUEST*\n\n"
+                f"👤 User: @{user.username or user.first_name}\n"
+                f"💰 Amount: {amount:.2f} ETB\n"
+                f"📱 Phone: {phone}\n"
+                f"📋 ID: #{request_id}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
         return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ Invalid")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount! Use numbers only.")
         return WITHDRAW_STATE
 
 async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = get_user(user_id)
+    
     if not user_data or not user_data.get('is_admin', 0):
-        await update.message.reply_text("❌ Admin only")
+        await update.message.reply_text("❌ Admin access required!")
         return
     
     deposits = get_pending_deposits()
-    message = "📋 *PENDING DEPOSITS*\n\n"
-    for d in deposits[:10]:
-        message += f"• #{d[0]} | {d[5]} | {d[2]:.2f} ETB | TXN: {d[3]}\n"
     
     if not deposits:
-        message += "No pending deposits"
+        await update.message.reply_text("📭 No pending deposit requests.")
+        return
     
+    message = "📋 *PENDING DEPOSITS*\n\n"
+    for d in deposits:
+        message += f"• #{d[0]} | {d[5]} | {d[2]:.2f} ETB | TXN: {d[3]}\n"
+    
+    message += "\nUse /verify to approve deposits."
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 async def verify_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = get_user(user_id)
+    
     if not user_data or not user_data.get('is_admin', 0):
-        await update.message.reply_text("❌ Admin only")
+        await update.message.reply_text("❌ Admin access required!")
         return
     
     deposits = get_pending_deposits()
+    
+    if not deposits:
+        await update.message.reply_text("📭 No pending deposits to verify.")
+        return
+    
     keyboard = []
-    for d in deposits[:10]:
+    for d in deposits:
         keyboard.append([InlineKeyboardButton(
-            f"✅ Deposit #{d[0]} - {d[2]:.2f} ETB", 
+            f"✅ Deposit #{d[0]} - {d[2]:.2f} ETB ({d[5]})", 
             callback_data=f"dep_{d[0]}"
         )])
     
-    if not keyboard:
-        keyboard.append([InlineKeyboardButton("📭 No requests", callback_data="noop")])
-    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🔐 *Admin Panel*\nSelect to approve:",
+        "🔐 *Admin Verification Panel*\n\nSelect a deposit to approve:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=reply_markup
     )
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    user_id = query.from_user.id
+    user_data = get_user(user_id)
+    
+    if not user_data or not user_data.get('is_admin', 0):
+        await query.message.reply_text("❌ Admin access required!")
+        return
+    
     data = query.data
+    
     if data.startswith("dep_"):
         request_id = int(data.split("_")[1])
-        success, amount = verify_deposit(request_id, query.from_user.id)
+        success, amount = verify_deposit(request_id, user_id)
+        
         if success:
-            await query.edit_message_text(f"✅ Deposit #{request_id} approved! {amount} ETB added.")
+            await query.edit_message_text(f"✅ Deposit #{request_id} approved! {amount:.2f} ETB added to user balance.")
         else:
-            await query.edit_message_text(f"❌ Failed to approve #{request_id}")
+            await query.edit_message_text(f"❌ Failed to approve deposit #{request_id}.")
 
 async def players_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = get_user(user_id)
+    
     if not user_data or not user_data.get('is_admin', 0):
-        await update.message.reply_text("❌ Admin only")
+        await update.message.reply_text("❌ Admin access required!")
         return
     
     conn = sqlite3.connect('bingo_bot.db')
@@ -587,13 +679,58 @@ async def players_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     players = cursor.fetchall()
     conn.close()
     
-    msg = "👥 *TOP PLAYERS*\n\n"
+    if not players:
+        await update.message.reply_text("No players registered yet.")
+        return
+    
+    message = "👥 *TOP PLAYERS*\n\n"
+    total_balance = 0
     for i, p in enumerate(players, 1):
-        msg += f"{i}. {p[0]} @{p[1] or 'N/A'} | 💰 {p[2]:.2f} ETB\n"
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        message += f"{i}. {p[0]} @{p[1] or 'N/A'} | 💰 {p[2]:.2f} ETB | 🎮 {p[3]}\n"
+        total_balance += p[2]
+    
+    message += f"\n📊 Total Players: {len(players)}"
+    message += f"\n💰 Total Balance: {total_balance:.2f} ETB"
+    
+    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_user(user_id)
+    
+    if not user_data or not user_data.get('is_admin', 0):
+        await update.message.reply_text("❌ Admin access required!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /broadcast Your message here")
+        return
+    
+    message = ' '.join(context.args)
+    
+    conn = sqlite3.connect('bingo_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users')
+    users = cursor.fetchall()
+    conn.close()
+    
+    success_count = 0
+    for user in users:
+        try:
+            await context.bot.send_message(
+                user[0],
+                f"📢 *ANNOUNCEMENT*\n\n{message}\n\n🎯 Play now: {GAME_URL}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            success_count += 1
+            await asyncio.sleep(0.05)
+        except:
+            pass
+    
+    await update.message.reply_text(f"✅ Broadcast sent to {success_count}/{len(users)} users!")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Cancelled")
+    await update.message.reply_text("❌ Operation cancelled.")
     return ConversationHandler.END
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -606,10 +743,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await instruction(update, context)
 
 # ============================================
-# RUN BOT
+# MAIN - RUN BOT
 # ============================================
 
 def run_bot():
+    """Run the Telegram bot"""
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Command handlers
@@ -625,6 +763,7 @@ def run_bot():
     application.add_handler(CommandHandler("pending", pending_requests))
     application.add_handler(CommandHandler("verify", verify_menu))
     application.add_handler(CommandHandler("players", players_list))
+    application.add_handler(CommandHandler("broadcast", broadcast))
     
     # Conversation handlers
     application.add_handler(ConversationHandler(
@@ -643,16 +782,18 @@ def run_bot():
     application.add_handler(CallbackQueryHandler(admin_callback, pattern="^dep_"))
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    print("🤖 Bot is running!")
+    print("🤖 Bot is running! Waiting for messages...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def run_web():
+    """Run Flask web server for API"""
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
     init_db()
     print("🚀 Starting Logo Bing Bingo Bot...")
+    print("=" * 50)
     
     # Run web server in background thread
     web_thread = threading.Thread(target=run_web)

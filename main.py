@@ -1,5 +1,6 @@
 # main.py - Logo Bing Bingo Bot
 # PRODUCTION READY - Render Deployment Version
+# ✅ NO erroneous imports - completely clean
 
 import os
 import sqlite3
@@ -319,7 +320,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success, amount = approve_deposit(rid)
         if success:
             await query.edit_message_text(f"✅ Deposit #{rid} approved! {amount} ETB added.")
-            # Notify user
             conn = get_db_connection()
             c = conn.cursor()
             c.execute('SELECT user_id FROM deposit_requests WHERE id = ?', (rid,))
@@ -338,7 +338,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ============================================
-# MAIN
+# MAIN ENTRY POINT
 # ============================================
 
 def run_bot():
